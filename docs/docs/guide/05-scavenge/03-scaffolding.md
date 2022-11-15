@@ -9,6 +9,7 @@ Scaffold a new Cosmos SDK blockchain using the `ignite scaffold chain` command.
 By default a chain is scaffolded with a new empty Cosmos SDK module. Use the `--no-module` flag to skip module
 scaffolding.
 
+[mdrun]: # (exec)
 ```bash
 ignite scaffold chain scavenge --no-module
 ```
@@ -18,7 +19,8 @@ application-specific logic yet, but it imports standard Cosmos SDK modules, such
 
 Change the current directory to `scavenge`:
 
-```bash
+[mdrun]: # (exec)
+```bash mdrun=q
 cd scavenge
 ```
 
