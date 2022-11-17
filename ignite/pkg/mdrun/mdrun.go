@@ -5,12 +5,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/davecgh/go-spew/spew"
+	"github.com/pkg/errors"
 	"github.com/yuin/goldmark/ast"
-	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/text"
-	"github.com/yuin/goldmark/util"
 )
 
 type Runner struct {
@@ -45,16 +45,6 @@ func Run(dir string) error {
 	if err != nil {
 		return fmt.Errorf("mdrun walking %s: %w", dir, err)
 	}
-	parser := parser.NewParser(
-		parser.WithBlockParsers(
-			append(
-				parser.DefaultBlockParsers(),
-				util.Prioritized(mdrunParser{}, 9999),
-			)...,
-		),
-		parser.WithInlineParsers(parser.DefaultInlineParsers()...),
-		parser.WithParagraphTransformers(parser.DefaultParagraphTransformers()...),
-	)
 	spew.Config.DisableMethods = true
 	for dir, files := range fileSets {
 		fmt.Println("DIR", dir, len(files))
@@ -63,7 +53,7 @@ func Run(dir string) error {
 			if err != nil {
 				return fmt.Errorf("read file %s: %w", files[i].Name(), err)
 			}
-			n := parser.Parse(text.NewReader(bz))
+			n := NewParser().Parse(text.NewReader(bz))
 			err = ast.Walk(n, visitMD)
 			if err != nil {
 				return err
@@ -78,11 +68,28 @@ var bz []byte
 
 func visitMD(n ast.Node, entering bool) (ast.WalkStatus, error) {
 	fmt.Println(n.Kind(), string(n.Text(bz)))
-	if n.Type() == ast.TypeBlock {
-		n.Dump(bz, 0)
-	}
-	if n.Kind() != ast.KindTextBlock {
+	mdrun, ok := n.(mdrunNode)
+	if !ok {
 		return ast.WalkContinue, nil
+	}
+	fmt.Println(mdrun.content)
+	cmds := strings.Fields(mdrun.content)
+	switch cmds[0] {
+	case "exec":
+		// expect the next node is a code block
+		n := n.NextSibling()
+		codeBlock, ok := n.(*ast.FencedCodeBlock)
+		if !ok {
+			return ast.WalkStop, errors.Errorf("expected FencedCodeBlock, got %T", n)
+		}
+		lang := string(codeBlock.Language(bz))
+		for i := 0; i < codeBlock.Lines().Len(); i++ {
+			line := codeBlock.Lines().At(i)
+			s := string(line.Value(bz))
+			fmt.Println("MEXT", lang, s)
+		}
+	default:
+		return ast.WalkStop, errors.Errorf("unknow mdrun commands %q", cmds[0])
 	}
 	return ast.WalkContinue, nil
 }
