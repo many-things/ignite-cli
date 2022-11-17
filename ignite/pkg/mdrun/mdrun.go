@@ -5,28 +5,38 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/pkg/errors"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/text"
 )
 
-type Runner struct {
-	dir     string
-	content []byte
+// Asserter is responsible for ensuring that cmd is executed properly
+// regarding codeBlock
+//
+//go:generate mockery --srcpkg . --name Asserter --with-expecter
+type Asserter interface {
+	Assert(cmd string, codeBlock CodeBlock) error
 }
 
-func Run(dir string) error {
+// CodeBlock represents a markdown fenced code block.
+type CodeBlock struct {
+	Lang  string
+	Lines []string
+}
+
+// Inspect detects all md files in dir, sort them by folder and assert mdrun
+// commands.
+// fileSets group markdown files per directory.
+// Each directory is considered as a group of instructions that should be
+// successfully executed to mark the group as sucessful.
+// Files are sorted lexicographycally and instructions order is expected to
+// be the same.
+func Inspect(dir string, r Asserter) error {
+	// build file sets
 	var (
 		currentDir = dir
-		// fileSets will group markdown files per directory.
-		// Each directory is considered as a group of instructions that should
-		// be successfully executed to mark the group as sucessful.
-		// Files are sorted lexicographycally and instructions order is expected to
-		// be the same.
-		fileSets = make(map[string][]fs.DirEntry)
+		fileSets   = make(map[string][]fs.DirEntry)
 	)
 	err := fs.WalkDir(os.DirFS(dir), ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -45,51 +55,52 @@ func Run(dir string) error {
 	if err != nil {
 		return fmt.Errorf("mdrun walking %s: %w", dir, err)
 	}
-	spew.Config.DisableMethods = true
+
+	// Loop in filesets to parse markdown, find mdrun blocks and assert them.
 	for dir, files := range fileSets {
-		fmt.Println("DIR", dir, len(files))
 		for i := 0; i < len(files); i++ {
-			bz, err = os.ReadFile(filepath.Join(dir, files[i].Name()))
+			bz, err := os.ReadFile(filepath.Join(dir, files[i].Name()))
 			if err != nil {
 				return fmt.Errorf("read file %s: %w", files[i].Name(), err)
 			}
-			n := NewParser().Parse(text.NewReader(bz))
-			err = ast.Walk(n, visitMD)
+			root := NewParser().Parse(text.NewReader(bz))
+			err = ast.Walk(root, visitor{bz: bz, r: r}.visit)
 			if err != nil {
 				return err
 			}
-
 		}
 	}
 	return nil
 }
 
-var bz []byte
+// visitor expose a visit method usable in ast.Walk
+type visitor struct {
+	r  Asserter
+	bz []byte
+}
 
-func visitMD(n ast.Node, entering bool) (ast.WalkStatus, error) {
-	fmt.Println(n.Kind(), string(n.Text(bz)))
+func (v visitor) visit(n ast.Node, entering bool) (ast.WalkStatus, error) {
 	mdrun, ok := n.(mdrunNode)
 	if !ok {
+		// skip if n is not a mdrunNode
 		return ast.WalkContinue, nil
 	}
-	fmt.Println(mdrun.content)
-	cmds := strings.Fields(mdrun.content)
-	switch cmds[0] {
-	case "exec":
-		// expect the next node is a code block
-		n := n.NextSibling()
-		codeBlock, ok := n.(*ast.FencedCodeBlock)
-		if !ok {
-			return ast.WalkStop, errors.Errorf("expected FencedCodeBlock, got %T", n)
-		}
-		lang := string(codeBlock.Language(bz))
-		for i := 0; i < codeBlock.Lines().Len(); i++ {
-			line := codeBlock.Lines().At(i)
-			s := string(line.Value(bz))
-			fmt.Println("MEXT", lang, s)
-		}
-	default:
-		return ast.WalkStop, errors.Errorf("unknow mdrun commands %q", cmds[0])
+	// expected next node must be a FencedCodeBlock
+	codeBlock, ok := n.NextSibling().(*ast.FencedCodeBlock)
+	if !ok {
+		return ast.WalkStop, errors.Errorf("mdrun sibling must be a FencedCodeBlock, got %T", n.NextSibling())
+	}
+	var (
+		lang  = string(codeBlock.Language(v.bz))
+		lines []string
+	)
+	for i := 0; i < codeBlock.Lines().Len(); i++ {
+		line := codeBlock.Lines().At(i)
+		lines = append(lines, string(line.Value(v.bz)))
+	}
+	err := v.r.Assert(mdrun.content, CodeBlock{Lang: lang, Lines: lines})
+	if err != nil {
+		return ast.WalkStop, err
 	}
 	return ast.WalkContinue, nil
 }
